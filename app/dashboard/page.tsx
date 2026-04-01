@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
-import { Plus, Trash2, ArrowUp, ArrowDown, Play } from 'lucide-react'
+import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save } from 'lucide-react'
 
 // --- Types based on your database schema ---
 type Flavor = { id: number; slug: string; description: string }
@@ -64,41 +64,63 @@ export default function Dashboard() {
       order_by: newOrder,
       llm_system_prompt: "You are a funny assistant.",
       llm_user_prompt: "Make a joke about this image description: {description}",
-      humor_flavor_step_type_id: 1 // Assuming 1 is a valid ID in your DB
+      // 🚨 NOTE: If this fails, it's because '1' isn't a valid ID in your humor_flavor_step_types table!
+      humor_flavor_step_type_id: 1
     }]).select().single()
 
-    if (!error && data) {
+    if (error) {
+      console.error("SUPABASE ERROR:", error)
+      alert(`Failed to add step! Check console. Error: ${error.message}`)
+    }
+
+    if (data) {
       setSteps([...steps, data])
     }
   }
 
-  // 5. Reorder Steps (Move Up/Down)
+  // 5. Update Step Text (Local State)
+  function handleTextChange(index: number, field: 'llm_system_prompt' | 'llm_user_prompt', value: string) {
+    const newSteps = [...steps]
+    newSteps[index][field] = value
+    setSteps(newSteps)
+  }
+
+  // 6. Save Step Text to Database (Fires when clicking outside the textbox)
+  async function saveStepToDB(step: Step) {
+    const { error } = await supabase.from('humor_flavor_steps').update({
+      llm_system_prompt: step.llm_system_prompt,
+      llm_user_prompt: step.llm_user_prompt
+    }).eq('id', step.id)
+
+    if (error) {
+      alert("Failed to save changes to database!")
+    }
+  }
+
+  // 7. Reorder Steps (Move Up/Down)
   async function moveStep(index: number, direction: 'up' | 'down') {
     if ((direction === 'up' && index === 0) || (direction === 'down' && index === steps.length - 1)) return
 
     const newSteps = [...steps]
     const swapIndex = direction === 'up' ? index - 1 : index + 1
 
-    // Swap the order_by values locally
     const tempOrder = newSteps[index].order_by
     newSteps[index].order_by = newSteps[swapIndex].order_by
     newSteps[swapIndex].order_by = tempOrder
 
-    // Swap their positions in the array for instant UI update
     const tempStep = newSteps[index]
     newSteps[index] = newSteps[swapIndex]
     newSteps[swapIndex] = tempStep
 
     setSteps(newSteps)
 
-    // Save to database
     await supabase.from('humor_flavor_steps').upsert([
       { id: newSteps[index].id, order_by: newSteps[index].order_by },
       { id: newSteps[swapIndex].id, order_by: newSteps[swapIndex].order_by }
     ])
   }
 
-  // 6. Delete Functions
+  // 8. Delete Functions
   async function deleteFlavor(id: number) {
     if (!confirm("Are you sure? This deletes all associated steps!")) return
     await supabase.from('humor_flavors').delete().eq('id', id)
@@ -109,6 +131,18 @@ export default function Dashboard() {
   async function deleteStep(id: number) {
     await supabase.from('humor_flavor_steps').delete().eq('id', id)
     setSteps(steps.filter(s => s.id !== id))
+  }
+
+  // 9. Test API Dummy Function
+  function handleTestAPI() {
+    if (steps.length === 0) {
+      alert("Add some steps first!")
+      return
+    }
+
+    // Log exactly what we will eventually send to your AI backend
+    console.log("🚀 TESTING API WITH PAYLOAD:", steps)
+    alert(`Success! Check your browser's Developer Console to see the ${steps.length} steps we captured. Next up: Wiring this to the real AI backend!`)
   }
 
   if (loading) return <div>Loading interface...</div>
@@ -150,11 +184,11 @@ export default function Dashboard() {
           <>
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold">Steps for: {selectedFlavor.slug}</h2>
-              <div className="space-x-2">
-                <button onClick={createStep} className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-2 inline-flex">
+              <div className="space-x-2 flex">
+                <button onClick={createStep} className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-2">
                   <Plus size={16} /> Add Step
                 </button>
-                <button className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 flex items-center gap-2 inline-flex">
+                <button onClick={handleTestAPI} className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 flex items-center gap-2">
                   <Play size={16} /> Test API
                 </button>
               </div>
@@ -182,7 +216,9 @@ export default function Dashboard() {
                     <div>
                       <label className="block text-xs font-semibold text-gray-500 mb-1">SYSTEM PROMPT</label>
                       <textarea
-                        defaultValue={step.llm_system_prompt}
+                        value={step.llm_system_prompt}
+                        onChange={(e) => handleTextChange(index, 'llm_system_prompt', e.target.value)}
+                        onBlur={() => saveStepToDB(step)}
                         className="w-full p-2 text-sm border rounded bg-transparent font-mono"
                         rows={2}
                       />
@@ -190,7 +226,9 @@ export default function Dashboard() {
                     <div>
                       <label className="block text-xs font-semibold text-gray-500 mb-1">USER PROMPT (Use {'{description}'} to inject image info)</label>
                       <textarea
-                        defaultValue={step.llm_user_prompt}
+                        value={step.llm_user_prompt}
+                        onChange={(e) => handleTextChange(index, 'llm_user_prompt', e.target.value)}
+                        onBlur={() => saveStepToDB(step)}
                         className="w-full p-2 text-sm border rounded bg-transparent font-mono"
                         rows={2}
                       />
