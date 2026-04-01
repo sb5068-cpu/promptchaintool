@@ -65,8 +65,9 @@ export default function Dashboard() {
         llm_system_prompt: "You are a funny assistant.",
         llm_user_prompt: "Make a joke about this image description: {description}",
         humor_flavor_step_type_id: 1,
-        // 🚨 THIS IS THE FIX: We are now sending the required input type!
-        llm_input_type_id: 1
+        llm_input_type_id: 1,
+        // 🚨 THIS IS THE NEW FIX: Satisfying the output type constraint!
+        llm_output_type_id: 1
       }]).select().single()
 
       if (error) {
@@ -77,7 +78,7 @@ export default function Dashboard() {
       if (data) {
         setSteps([...steps, data])
       }
-  }
+    }
 
   // 5. Update Step Text (Local State)
   function handleTextChange(index: number, field: 'llm_system_prompt' | 'llm_user_prompt', value: string) {
