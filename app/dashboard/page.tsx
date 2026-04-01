@@ -55,30 +55,32 @@ export default function Dashboard() {
   }
 
   // 4. Create a new Step
-    async function createStep() {
-      if (!selectedFlavor) return
-      const newOrder = steps.length > 0 ? steps[steps.length - 1].order_by + 1 : 1
+    // 4. Create a new Step
+      async function createStep() {
+        if (!selectedFlavor) return
+        const newOrder = steps.length > 0 ? steps[steps.length - 1].order_by + 1 : 1
 
-      const { data, error } = await supabase.from('humor_flavor_steps').insert([{
-        humor_flavor_id: selectedFlavor.id,
-        order_by: newOrder,
-        llm_system_prompt: "You are a funny assistant.",
-        llm_user_prompt: "Make a joke about this image description: {description}",
-        humor_flavor_step_type_id: 1,
-        llm_input_type_id: 1,
-        // 🚨 THIS IS THE NEW FIX: Satisfying the output type constraint!
-        llm_output_type_id: 1
-      }]).select().single()
+        const { data, error } = await supabase.from('humor_flavor_steps').insert([{
+          humor_flavor_id: selectedFlavor.id,
+          order_by: newOrder,
+          llm_system_prompt: "You are a funny assistant.",
+          llm_user_prompt: "Make a joke about this image description: {description}",
+          humor_flavor_step_type_id: 1,
+          llm_input_type_id: 1,
+          llm_output_type_id: 1,
+          // 🚨 THIS IS THE NEW FIX: The AI model ID requirement!
+          llm_model_id: 1
+        }]).select().single()
 
-      if (error) {
-        console.error("SUPABASE ERROR:", error)
-        alert(`Failed to add step! Check console. Error: ${error.message}`)
+        if (error) {
+          console.error("SUPABASE ERROR:", error)
+          alert(`Failed to add step! Check console. Error: ${error.message}`)
+        }
+
+        if (data) {
+          setSteps([...steps, data])
+        }
       }
-
-      if (data) {
-        setSteps([...steps, data])
-      }
-    }
 
   // 5. Update Step Text (Local State)
   function handleTextChange(index: number, field: 'llm_system_prompt' | 'llm_user_prompt', value: string) {
