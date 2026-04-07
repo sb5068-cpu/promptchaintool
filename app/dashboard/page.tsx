@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
-import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save } from 'lucide-react'
+import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save, Pencil, X } from 'lucide-react'
 
 // --- Types based on your database schema ---
 type Flavor = { id: number; slug: string; description: string }
@@ -14,6 +14,8 @@ export default function Dashboard() {
   const [selectedFlavor, setSelectedFlavor] = useState<Flavor | null>(null)
   const [steps, setSteps] = useState<Step[]>([])
   const [loading, setLoading] = useState(true)
+  const [editingFlavorId, setEditingFlavorId] = useState<number | null>(null)
+  const [editingFlavorData, setEditingFlavorData] = useState<{ slug: string; description: string }>({ slug: '', description: '' })
 
   // 1. Fetch Flavors on Load
   useEffect(() => {
@@ -54,38 +56,65 @@ export default function Dashboard() {
     }
   }
 
+  // 3b. Edit an existing Flavor
+  function startEditingFlavor(e: React.MouseEvent, flavor: Flavor) {
+    e.stopPropagation()
+    setEditingFlavorId(flavor.id)
+    setEditingFlavorData({ slug: flavor.slug, description: flavor.description })
+  }
+
+  async function saveFlavorEdit(id: number) {
+    const { data, error } = await supabase
+      .from('humor_flavors')
+      .update({ slug: editingFlavorData.slug, description: editingFlavorData.description })
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (!error && data) {
+      setFlavors(flavors.map(f => f.id === id ? data : f))
+      if (selectedFlavor?.id === id) setSelectedFlavor(data)
+      setEditingFlavorId(null)
+    } else {
+      alert("Error saving flavor. Make sure the slug is unique!")
+    }
+  }
+
+  function cancelFlavorEdit(e: React.MouseEvent) {
+    e.stopPropagation()
+    setEditingFlavorId(null)
+  }
+
   // 4. Create a new Step
-    // 4. Create a new Step
-      async function createStep() {
-        if (!selectedFlavor) return
-        const newOrder = steps.length > 0 ? steps[steps.length - 1].order_by + 1 : 1
+  async function createStep() {
+    if (!selectedFlavor) return
+    const newOrder = steps.length > 0 ? steps[steps.length - 1].order_by + 1 : 1
 
-        const { data, error } = await supabase.from('humor_flavor_steps').insert([{
-          humor_flavor_id: selectedFlavor.id,
-          order_by: newOrder,
-          llm_system_prompt: "You are a funny assistant.",
-          llm_user_prompt: "Make a joke about this image description: {description}",
-          humor_flavor_step_type_id: 1,
-          llm_input_type_id: 1,
-          llm_output_type_id: 1,
-          // 🚨 THIS IS THE NEW FIX: The AI model ID requirement!
-          llm_model_id: 1
-        }]).select().single()
+    const { data, error } = await supabase.from('humor_flavor_steps').insert([{
+      humor_flavor_id: selectedFlavor.id,
+      order_by: newOrder,
+      llm_system_prompt: "You are a funny assistant.",
+      llm_user_prompt: "Make a joke about this image description: {description}",
+      humor_flavor_step_type_id: 1,
+      llm_input_type_id: 1,
+      llm_output_type_id: 1,
+      llm_model_id: 1
+    }]).select().single()
 
-        if (error) {
-          console.error("SUPABASE ERROR:", error)
-          alert(`Failed to add step! Check console. Error: ${error.message}`)
-        }
+    if (error) {
+      console.error("SUPABASE ERROR:", error)
+      alert(`Failed to add step! Check console. Error: ${error.message}`)
+    }
 
-        if (data) {
-          setSteps([...steps, data])
-        }
-      }
+    if (data) {
+      setSteps([...steps, data])
+    }
+  }
 
   // 5. Update Step Text (Local State)
   function handleTextChange(index: number, field: 'llm_system_prompt' | 'llm_user_prompt', value: string) {
     const newSteps = [...steps]
-    newSteps[index][field] = value
+    newSteps[index] = { ...newSteps[index], [field]: value }
     setSteps(newSteps)
   }
 
@@ -137,14 +166,13 @@ export default function Dashboard() {
     setSteps(steps.filter(s => s.id !== id))
   }
 
-  // 9. Test API Dummy Function
+  // 9. Test API Dummy Function (to be wired up with api.almostcrackd.ai)
   function handleTestAPI() {
     if (steps.length === 0) {
       alert("Add some steps first!")
       return
     }
 
-    // Log exactly what we will eventually send to your AI backend
     console.log("🚀 TESTING API WITH PAYLOAD:", steps)
     alert(`Success! Check your browser's Developer Console to see the ${steps.length} steps we captured. Next up: Wiring this to the real AI backend!`)
   }
@@ -164,16 +192,65 @@ export default function Dashboard() {
 
         <div className="space-y-3">
           {flavors.map(flavor => (
-            <div
-              key={flavor.id}
-              className={`p-4 border rounded cursor-pointer flex justify-between items-center transition-colors ${selectedFlavor?.id === flavor.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
-              onClick={() => handleSelectFlavor(flavor)}
-            >
-              <span className="font-medium">{flavor.slug}</span>
-              <button onClick={(e) => { e.stopPropagation(); deleteFlavor(flavor.id); }} className="text-red-500 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded">
-                <Trash2 size={16} />
-              </button>
-            </div>
+            editingFlavorId === flavor.id ? (
+              /* Edit mode */
+              <div key={flavor.id} className="p-4 border rounded border-blue-500 bg-blue-50 dark:bg-blue-900/20 space-y-2">
+                <input
+                  value={editingFlavorData.slug}
+                  onChange={e => setEditingFlavorData(d => ({ ...d, slug: e.target.value }))}
+                  className="w-full p-1 text-sm border rounded bg-transparent font-mono"
+                  placeholder="Slug"
+                />
+                <input
+                  value={editingFlavorData.description}
+                  onChange={e => setEditingFlavorData(d => ({ ...d, description: e.target.value }))}
+                  className="w-full p-1 text-sm border rounded bg-transparent"
+                  placeholder="Description"
+                />
+                <div className="flex gap-2 mt-1">
+                  <button
+                    onClick={() => saveFlavorEdit(flavor.id)}
+                    className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                  >
+                    <Save size={12} /> Save
+                  </button>
+                  <button
+                    onClick={cancelFlavorEdit}
+                    className="flex items-center gap-1 px-2 py-1 text-xs border rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                  >
+                    <X size={12} /> Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* View mode */
+              <div
+                key={flavor.id}
+                className={`p-4 border rounded cursor-pointer flex justify-between items-center transition-colors ${selectedFlavor?.id === flavor.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                onClick={() => handleSelectFlavor(flavor)}
+              >
+                <div className="min-w-0">
+                  <span className="font-medium block truncate">{flavor.slug}</span>
+                  {flavor.description && (
+                    <span className="text-xs text-gray-500 block truncate">{flavor.description}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 ml-2 shrink-0">
+                  <button
+                    onClick={(e) => startEditingFlavor(e, flavor)}
+                    className="text-gray-400 p-1 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deleteFlavor(flavor.id) }}
+                    className="text-red-500 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+            )
           ))}
         </div>
       </div>
@@ -222,7 +299,7 @@ export default function Dashboard() {
                       <textarea
                         value={step.llm_system_prompt}
                         onChange={(e) => handleTextChange(index, 'llm_system_prompt', e.target.value)}
-                        onBlur={() => saveStepToDB(step)}
+                        onBlur={() => saveStepToDB(steps[index])}
                         className="w-full p-2 text-sm border rounded bg-transparent font-mono"
                         rows={2}
                       />
@@ -232,7 +309,7 @@ export default function Dashboard() {
                       <textarea
                         value={step.llm_user_prompt}
                         onChange={(e) => handleTextChange(index, 'llm_user_prompt', e.target.value)}
-                        onBlur={() => saveStepToDB(step)}
+                        onBlur={() => saveStepToDB(steps[index])}
                         className="w-full p-2 text-sm border rounded bg-transparent font-mono"
                         rows={2}
                       />
