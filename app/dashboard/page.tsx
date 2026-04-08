@@ -7,6 +7,7 @@ import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save, Pencil, X } from 'lucide-
 // --- Types based on your database schema ---
 type Flavor = { id: number; slug: string; description: string }
 type Step = { id: number; humor_flavor_id: number; order_by: number; llm_system_prompt: string; llm_user_prompt: string }
+type Caption = { id: string; content: string }
 
 export default function Dashboard() {
   const supabase = createClient()
@@ -14,8 +15,18 @@ export default function Dashboard() {
   const [selectedFlavor, setSelectedFlavor] = useState<Flavor | null>(null)
   const [steps, setSteps] = useState<Step[]>([])
   const [loading, setLoading] = useState(true)
+
+  // Edit flavor state
   const [editingFlavorId, setEditingFlavorId] = useState<number | null>(null)
   const [editingFlavorData, setEditingFlavorData] = useState<{ slug: string; description: string }>({ slug: '', description: '' })
+
+  // Test API panel state
+  const [testPanelOpen, setTestPanelOpen] = useState(false)
+  const [testImage, setTestImage] = useState<File | null>(null)
+  const [testLoading, setTestLoading] = useState(false)
+  const [testStep, setTestStep] = useState<string>('')
+  const [testCaptions, setTestCaptions] = useState<Caption[]>([])
+  const [testError, setTestError] = useState<string | null>(null)
 
   // 1. Fetch Flavors on Load
   useEffect(() => {
@@ -41,6 +52,9 @@ export default function Dashboard() {
   const handleSelectFlavor = (flavor: Flavor) => {
     setSelectedFlavor(flavor)
     fetchSteps(flavor.id)
+    setTestPanelOpen(false)
+    setTestCaptions([])
+    setTestError(null)
   }
 
   // 3. Create a new Flavor
@@ -166,15 +180,84 @@ export default function Dashboard() {
     setSteps(steps.filter(s => s.id !== id))
   }
 
-  // 9. Test API Dummy Function (to be wired up with api.almostcrackd.ai)
+  // 9. Test API — full 4-step caption pipeline
   function handleTestAPI() {
     if (steps.length === 0) {
       alert("Add some steps first!")
       return
     }
+    setTestPanelOpen(true)
+    setTestCaptions([])
+    setTestError(null)
+    setTestStep('')
+  }
 
-    console.log("🚀 TESTING API WITH PAYLOAD:", steps)
-    alert(`Success! Check your browser's Developer Console to see the ${steps.length} steps we captured. Next up: Wiring this to the real AI backend!`)
+  async function runCaptionPipeline() {
+    if (!testImage || !selectedFlavor) return
+
+    setTestLoading(true)
+    setTestError(null)
+    setTestCaptions([])
+
+    try {
+      // Get the user's JWT from Supabase session
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error("Not authenticated. Please log in again.")
+
+      const BASE = 'https://api.almostcrackd.ai'
+      const authHeaders = {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      }
+
+      // Step 1: Get presigned upload URL
+      setTestStep('Step 1 / 4 — Generating upload URL…')
+      const presignRes = await fetch(`${BASE}/pipeline/generate-presigned-url`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ contentType: testImage.type }),
+      })
+      if (!presignRes.ok) throw new Error(`Presign failed: ${presignRes.status} ${presignRes.statusText}`)
+      const { presignedUrl, cdnUrl } = await presignRes.json()
+
+      // Step 2: Upload image bytes directly to S3
+      setTestStep('Step 2 / 4 — Uploading image…')
+      const uploadRes = await fetch(presignedUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': testImage.type },
+        body: testImage,
+      })
+      if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.status} ${uploadRes.statusText}`)
+
+      // Step 3: Register the uploaded image URL in the pipeline
+      setTestStep('Step 3 / 4 — Registering image…')
+      const registerRes = await fetch(`${BASE}/pipeline/upload-image-from-url`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ imageUrl: cdnUrl, isCommonUse: false }),
+      })
+      if (!registerRes.ok) throw new Error(`Register failed: ${registerRes.status} ${registerRes.statusText}`)
+      const { imageId } = await registerRes.json()
+
+      // Step 4: Generate captions using this flavor
+      setTestStep('Step 4 / 4 — Generating captions (this may take a moment)…')
+      const captionRes = await fetch(`${BASE}/pipeline/generate-captions`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ imageId, humorFlavorId: selectedFlavor.id }),
+      })
+      if (!captionRes.ok) throw new Error(`Caption generation failed: ${captionRes.status} ${captionRes.statusText}`)
+      const captions = await captionRes.json()
+
+      setTestCaptions(Array.isArray(captions) ? captions : [])
+      setTestStep('Done!')
+    } catch (err) {
+      setTestError(err instanceof Error ? err.message : 'An unknown error occurred.')
+      setTestStep('')
+    } finally {
+      setTestLoading(false)
+    }
   }
 
   if (loading) return <div>Loading interface...</div>
@@ -255,7 +338,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* RIGHT COLUMN: STEPS */}
+      {/* RIGHT COLUMN: STEPS + TEST PANEL */}
       <div className="w-2/3 bg-card p-6 rounded-xl border shadow-sm overflow-y-auto">
         {!selectedFlavor ? (
           <div className="flex items-center justify-center h-full text-gray-500">
@@ -275,6 +358,7 @@ export default function Dashboard() {
               </div>
             </div>
 
+            {/* Steps list */}
             <div className="space-y-4">
               {steps.length === 0 && <p className="text-gray-500">No steps created yet.</p>}
 
@@ -326,6 +410,84 @@ export default function Dashboard() {
                 </div>
               ))}
             </div>
+
+            {/* Test API Panel */}
+            {testPanelOpen && (
+              <div className="mt-6 p-5 border rounded-xl bg-purple-50 dark:bg-purple-950/30 border-purple-200 dark:border-purple-800">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-lg">Test Caption Pipeline</h3>
+                  <button
+                    onClick={() => { setTestPanelOpen(false); setTestCaptions([]); setTestError(null); setTestStep('') }}
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  {/* Image picker */}
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Select a test image:</label>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/jpg,image/png,image/webp,image/gif,image/heic"
+                      onChange={e => {
+                        setTestImage(e.target.files?.[0] ?? null)
+                        setTestCaptions([])
+                        setTestError(null)
+                        setTestStep('')
+                      }}
+                      className="text-sm file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-purple-100 file:text-purple-700 hover:file:bg-purple-200 dark:file:bg-purple-900 dark:file:text-purple-200"
+                    />
+                    {testImage && (
+                      <p className="text-xs text-gray-500 mt-1">{testImage.name} — {(testImage.size / 1024).toFixed(1)} KB</p>
+                    )}
+                  </div>
+
+                  {/* Run button */}
+                  <button
+                    onClick={runCaptionPipeline}
+                    disabled={!testImage || testLoading}
+                    className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2 text-sm"
+                  >
+                    <Play size={15} />
+                    {testLoading ? 'Running pipeline…' : `Generate Captions for "${selectedFlavor.slug}"`}
+                  </button>
+
+                  {/* Progress */}
+                  {testStep && (
+                    <p className="text-sm text-purple-700 dark:text-purple-300 font-medium animate-pulse">{testStep}</p>
+                  )}
+
+                  {/* Error */}
+                  {testError && (
+                    <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded text-sm text-red-600 dark:text-red-400">
+                      <strong>Error:</strong> {testError}
+                    </div>
+                  )}
+
+                  {/* Results */}
+                  {testCaptions.length > 0 && (
+                    <div>
+                      <h4 className="font-semibold mb-3 text-sm">
+                        Generated {testCaptions.length} caption{testCaptions.length !== 1 ? 's' : ''}:
+                      </h4>
+                      <ul className="space-y-2">
+                        {testCaptions.map((caption, i) => (
+                          <li
+                            key={caption.id ?? i}
+                            className="p-3 bg-white dark:bg-gray-900 border rounded-lg text-sm shadow-sm"
+                          >
+                            <span className="font-mono text-xs text-gray-400 mr-2">#{i + 1}</span>
+                            {caption.content}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
