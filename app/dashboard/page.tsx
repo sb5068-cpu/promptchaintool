@@ -192,6 +192,17 @@ export default function Dashboard() {
     setTestStep('')
   }
 
+  // Helper: read a failed response body for a useful error message
+  async function readErrorBody(res: Response, label: string): Promise<string> {
+    try {
+      const body = await res.json()
+      const detail = body?.error ?? body?.message ?? body?.detail ?? JSON.stringify(body)
+      return `${label} (${res.status}): ${detail}`
+    } catch {
+      return `${label}: ${res.status} ${res.statusText}`
+    }
+  }
+
   async function runCaptionPipeline() {
     if (!testImage || !selectedFlavor) return
 
@@ -218,7 +229,7 @@ export default function Dashboard() {
         headers: authHeaders,
         body: JSON.stringify({ contentType: testImage.type }),
       })
-      if (!presignRes.ok) throw new Error(`Presign failed: ${presignRes.status} ${presignRes.statusText}`)
+      if (!presignRes.ok) throw new Error(await readErrorBody(presignRes, 'Presign failed'))
       const { presignedUrl, cdnUrl } = await presignRes.json()
 
       // Step 2: Upload image bytes directly to S3
@@ -228,7 +239,7 @@ export default function Dashboard() {
         headers: { 'Content-Type': testImage.type },
         body: testImage,
       })
-      if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.status} ${uploadRes.statusText}`)
+      if (!uploadRes.ok) throw new Error(`Upload to S3 failed: ${uploadRes.status} ${uploadRes.statusText}`)
 
       // Step 3: Register the uploaded image URL in the pipeline
       setTestStep('Step 3 / 4 — Registering image…')
@@ -237,7 +248,7 @@ export default function Dashboard() {
         headers: authHeaders,
         body: JSON.stringify({ imageUrl: cdnUrl, isCommonUse: false }),
       })
-      if (!registerRes.ok) throw new Error(`Register failed: ${registerRes.status} ${registerRes.statusText}`)
+      if (!registerRes.ok) throw new Error(await readErrorBody(registerRes, 'Register failed'))
       const { imageId } = await registerRes.json()
 
       // Step 4: Generate captions using this flavor
@@ -247,7 +258,7 @@ export default function Dashboard() {
         headers: authHeaders,
         body: JSON.stringify({ imageId, humorFlavorId: selectedFlavor.id }),
       })
-      if (!captionRes.ok) throw new Error(`Caption generation failed: ${captionRes.status} ${captionRes.statusText}`)
+      if (!captionRes.ok) throw new Error(await readErrorBody(captionRes, 'Caption generation failed'))
       const captions = await captionRes.json()
 
       setTestCaptions(Array.isArray(captions) ? captions : [])
