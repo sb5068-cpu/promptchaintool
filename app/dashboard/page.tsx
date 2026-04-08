@@ -225,6 +225,19 @@ export default function Dashboard() {
 
   async function runCaptionPipeline() {
     if (!testImage || !selectedFlavor) return
+
+    // Pre-flight: warn about any steps with missing required IDs
+    const badSteps = steps.filter(
+      s => !s.llm_model_id || !s.llm_input_type_id || !s.llm_output_type_id || !s.humor_flavor_step_type_id
+    )
+    if (badSteps.length > 0) {
+      const nums = badSteps.map(s => s.order_by).join(', ')
+      const go = confirm(
+        `⚠️ Step(s) ${nums} have missing Model / Input Type / Output Type / Step Type.\n\nThis is likely causing the 500 error. Fix the dropdowns and try again.\n\nContinue anyway?`
+      )
+      if (!go) return
+    }
+
     setTestLoading(true)
     setTestError(null)
     setTestCaptions([])
@@ -259,14 +272,36 @@ export default function Dashboard() {
       if (!registerRes.ok) throw new Error(await readErrorBody(registerRes, 'Register failed'))
       const { imageId } = await registerRes.json()
 
+      // Log the exact payload so you can inspect it in DevTools
+      const captionPayload = { imageId, humorFlavorId: selectedFlavor.id }
+      console.log('📤 generate-captions payload:', captionPayload)
+      console.log('📋 steps being used:', steps.map(s => ({
+        id: s.id,
+        order_by: s.order_by,
+        llm_model_id: s.llm_model_id,
+        llm_input_type_id: s.llm_input_type_id,
+        llm_output_type_id: s.llm_output_type_id,
+        humor_flavor_step_type_id: s.humor_flavor_step_type_id,
+        llm_temperature: s.llm_temperature,
+      })))
+
       setTestStep('Step 4 / 4 — Generating captions (this may take a moment)…')
       const captionRes = await fetch(`${BASE}/pipeline/generate-captions`, {
         method: 'POST', headers: authHeaders,
-        body: JSON.stringify({ imageId, humorFlavorId: selectedFlavor.id }),
+        body: JSON.stringify(captionPayload),
       })
-      if (!captionRes.ok) throw new Error(await readErrorBody(captionRes, 'Caption generation failed'))
-      const captions = await captionRes.json()
 
+      // Log the raw response for debugging
+      const rawText = await captionRes.text()
+      console.log(`📥 generate-captions response (${captionRes.status}):`, rawText)
+
+      if (!captionRes.ok) {
+        let detail = rawText
+        try { const j = JSON.parse(rawText); detail = j?.error ?? j?.message ?? j?.detail ?? rawText } catch { /* keep rawText */ }
+        throw new Error(`Caption generation failed (${captionRes.status}): ${detail}`)
+      }
+
+      const captions = JSON.parse(rawText)
       setTestCaptions(Array.isArray(captions) ? captions : [])
       setTestStep('Done!')
     } catch (err) {
