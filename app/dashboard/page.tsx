@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
-import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save, Pencil, X } from 'lucide-react'
+import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save, Pencil, X, Copy } from 'lucide-react'
 
 // --- Types ---
 type Flavor    = { id: number; slug: string; description: string }
@@ -126,6 +126,39 @@ export default function Dashboard() {
   function cancelFlavorEdit(e: React.MouseEvent) {
     e.stopPropagation()
     setEditingFlavorId(null)
+  }
+
+  // 3c. Duplicate a Flavor and all its steps
+  async function duplicateFlavor(e: React.MouseEvent, flavor: Flavor) {
+    e.stopPropagation()
+    const newSlug = prompt("Enter a unique name for the duplicate:", `${flavor.slug}-copy`)
+    if (!newSlug) return
+
+    const { data: newFlavor, error: flavorError } = await supabase
+      .from('humor_flavors')
+      .insert([{ slug: newSlug, description: flavor.description }])
+      .select().single()
+
+    if (flavorError || !newFlavor) {
+      alert("Error creating duplicate. Make sure the name is unique!")
+      return
+    }
+
+    const { data: originalSteps } = await supabase
+      .from('humor_flavor_steps')
+      .select('*')
+      .eq('humor_flavor_id', flavor.id)
+      .order('order_by', { ascending: true })
+
+    if (originalSteps && originalSteps.length > 0) {
+      const stepsCopy = originalSteps.map(({ id, ...step }: Step) => ({
+        ...step,
+        humor_flavor_id: newFlavor.id,
+      }))
+      await supabase.from('humor_flavor_steps').insert(stepsCopy)
+    }
+
+    setFlavors([newFlavor, ...flavors])
   }
 
   // 4. Create a new Step — use first real ID from each lookup table
@@ -367,6 +400,9 @@ export default function Dashboard() {
                 <div className="flex items-center gap-1 ml-2 shrink-0">
                   <button onClick={(e) => startEditingFlavor(e, flavor)} className="text-gray-400 p-1 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded">
                     <Pencil size={14} />
+                  </button>
+                  <button onClick={(e) => duplicateFlavor(e, flavor)} className="text-gray-400 p-1 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 rounded" title="Duplicate flavor">
+                    <Copy size={14} />
                   </button>
                   <button onClick={(e) => { e.stopPropagation(); deleteFlavor(flavor.id) }} className="text-red-500 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded">
                     <Trash2 size={16} />
