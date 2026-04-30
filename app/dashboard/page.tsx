@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
-import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save, Pencil, X, Copy, Search } from 'lucide-react'
+import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save, Pencil, X, Copy, Search, RotateCcw } from 'lucide-react'
 
 const MY_FLAVORS_KEY = 'prompt-chain-tool:my-flavor-ids'
 
@@ -53,6 +53,9 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('')
   const [myFlavorIds, setMyFlavorIds] = useState<Set<number>>(new Set())
 
+  // Co-lum-bia template — loaded once, used for new flavors and the "reset" button
+  const [columbiaSteps, setColumbiaSteps] = useState<Step[]>([])
+
   // 1. Fetch everything on load
   useEffect(() => {
     fetchFlavors()
@@ -88,7 +91,18 @@ export default function Dashboard() {
 
   async function fetchFlavors() {
     const { data } = await supabase.from('humor_flavors').select('*').order('id', { ascending: false })
-    if (data) setFlavors(data)
+    if (data) {
+      setFlavors(data)
+      const columbia = data.find(f => f.slug === 'co-lum-bia')
+      if (columbia) {
+        const { data: cSteps } = await supabase
+          .from('humor_flavor_steps')
+          .select('*')
+          .eq('humor_flavor_id', columbia.id)
+          .order('order_by', { ascending: true })
+        if (cSteps) setColumbiaSteps(cSteps)
+      }
+    }
     setLoading(false)
   }
 
@@ -123,17 +137,36 @@ export default function Dashboard() {
     setTestError(null)
   }
 
-  // 3. Create a new Flavor
+  // 3. Create a new Flavor — seeds steps from co-lum-bia as a working starting point
   async function createFlavor() {
-    const slug = prompt("Enter a unique name (slug) for this flavor:")
+    const promptText = columbiaSteps.length > 0
+      ? "Enter a unique name (slug) for this flavor.\n\nSteps will be copied from co-lum-bia as a working starting point — edit the prompts to make it your own."
+      : "Enter a unique name (slug) for this flavor:"
+    const slug = prompt(promptText)
     if (!slug) return
-    const { data, error } = await supabase.from('humor_flavors').insert([{ slug, description: 'New Flavor' }]).select().single()
-    if (!error && data) {
-      setFlavors([data, ...flavors])
-      markAsMine(data.id)
-    } else {
+
+    const description = columbiaSteps.length > 0 ? 'New Flavor (based on co-lum-bia)' : 'New Flavor'
+    const { data, error } = await supabase.from('humor_flavors').insert([{ slug, description }]).select().single()
+    if (error || !data) {
       alert("Error creating flavor. Make sure the slug is unique!")
+      return
     }
+
+    if (columbiaSteps.length > 0) {
+      const stepsCopy = columbiaSteps.map(({ id, ...step }: Step) => ({
+        ...step,
+        humor_flavor_id: data.id,
+      }))
+      const { error: stepsError } = await supabase.from('humor_flavor_steps').insert(stepsCopy)
+      if (stepsError) {
+        console.error("Failed to seed steps from co-lum-bia:", stepsError)
+        alert("Flavor created, but couldn't copy co-lum-bia's steps. You'll need to add steps manually.")
+      }
+    }
+
+    setFlavors([data, ...flavors])
+    markAsMine(data.id)
+    handleSelectFlavor(data)
   }
 
   // 3b. Edit an existing Flavor
@@ -197,22 +230,35 @@ export default function Dashboard() {
     markAsMine(newFlavor.id)
   }
 
-  // 4. Create a new Step — use first real ID from each lookup table
+  // 4. Create a new Step — inherits from the last step (or co-lum-bia's first) so the working config propagates
   async function createStep() {
     if (!selectedFlavor) return
     const newOrder = steps.length > 0 ? steps[steps.length - 1].order_by + 1 : 1
+    const template = steps[steps.length - 1] ?? columbiaSteps[0] ?? null
 
-    const { data, error } = await supabase.from('humor_flavor_steps').insert([{
-      humor_flavor_id:         selectedFlavor.id,
-      order_by:                newOrder,
-      llm_system_prompt:       "You are a funny assistant.",
-      llm_user_prompt:         "Make a joke about this image description: {description}",
+    const newStep = template ? {
+      humor_flavor_id:           selectedFlavor.id,
+      order_by:                  newOrder,
+      llm_system_prompt:         template.llm_system_prompt,
+      llm_user_prompt:           template.llm_user_prompt,
+      humor_flavor_step_type_id: template.humor_flavor_step_type_id,
+      llm_input_type_id:         template.llm_input_type_id,
+      llm_output_type_id:        template.llm_output_type_id,
+      llm_model_id:              template.llm_model_id,
+      llm_temperature:           template.llm_temperature,
+    } : {
+      humor_flavor_id:           selectedFlavor.id,
+      order_by:                  newOrder,
+      llm_system_prompt:         "You are a funny assistant.",
+      llm_user_prompt:           "Make a joke about this image description: {description}",
       humor_flavor_step_type_id: stepTypes[0]?.id   ?? null,
       llm_input_type_id:         inputTypes[0]?.id  ?? null,
       llm_output_type_id:        outputTypes[0]?.id ?? null,
       llm_model_id:              llmModels[0]?.id   ?? null,
       llm_temperature:           0.8,
-    }]).select().single()
+    }
+
+    const { data, error } = await supabase.from('humor_flavor_steps').insert([newStep]).select().single()
 
     if (error) {
       console.error("SUPABASE ERROR:", error)
@@ -278,6 +324,44 @@ export default function Dashboard() {
     await supabase.from('humor_flavor_steps').delete().eq('id', id)
     setSteps(steps.filter(s => s.id !== id))
     if (selectedFlavor) markAsMine(selectedFlavor.id)
+  }
+
+  // Reset a step to the corresponding co-lum-bia template (matched by index, clamped to last)
+  async function resetStepToColumbia(index: number) {
+    const template = columbiaSteps[index] ?? columbiaSteps[columbiaSteps.length - 1]
+    if (!template) {
+      alert("co-lum-bia template isn't loaded — can't reset.")
+      return
+    }
+    const current = steps[index]
+    if (!confirm(`Reset step ${index + 1} to co-lum-bia's defaults? This will overwrite the prompts and settings on this step.`)) return
+
+    const updated: Step = {
+      ...current,
+      llm_system_prompt:         template.llm_system_prompt,
+      llm_user_prompt:           template.llm_user_prompt,
+      humor_flavor_step_type_id: template.humor_flavor_step_type_id,
+      llm_input_type_id:         template.llm_input_type_id,
+      llm_output_type_id:        template.llm_output_type_id,
+      llm_model_id:              template.llm_model_id,
+      llm_temperature:           template.llm_temperature,
+    }
+    const newSteps = [...steps]
+    newSteps[index] = updated
+    setSteps(newSteps)
+    await saveStepToDB(updated)
+  }
+
+  // Per-step validation — what's missing that would cause the API to fail
+  function validateStep(step: Step): { valid: boolean; missing: string[] } {
+    const missing: string[] = []
+    if (!step.llm_model_id)              missing.push('Model')
+    if (!step.humor_flavor_step_type_id) missing.push('Step Type')
+    if (!step.llm_input_type_id)         missing.push('Input Type')
+    if (!step.llm_output_type_id)        missing.push('Output Type')
+    if (!step.llm_system_prompt?.trim()) missing.push('System Prompt')
+    if (!step.llm_user_prompt?.trim())   missing.push('User Prompt')
+    return { valid: missing.length === 0, missing }
   }
 
   // 9. Test API
@@ -518,8 +602,10 @@ export default function Dashboard() {
             <div className="space-y-4">
               {steps.length === 0 && <p className="text-gray-500">No steps created yet.</p>}
 
-              {steps.map((step, index) => (
-                <div key={step.id} className="p-4 border rounded-lg bg-background flex gap-4 shadow-sm">
+              {steps.map((step, index) => {
+                const v = validateStep(step)
+                return (
+                <div key={step.id} className={`p-4 border rounded-lg bg-background flex gap-4 shadow-sm ${v.valid ? '' : 'border-amber-300 dark:border-amber-700'}`}>
 
                   {/* Reorder */}
                   <div className="flex flex-col items-center justify-center gap-2 border-r pr-4">
@@ -535,6 +621,29 @@ export default function Dashboard() {
                   {/* Content */}
                   <div className="flex-1 space-y-3">
 
+                    {/* Status header: validation badge + reset-to-defaults */}
+                    <div className="flex items-center justify-between gap-2">
+                      {v.valid ? (
+                        <span className="text-xs px-2 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 font-medium">
+                          ✓ Ready
+                        </span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 font-medium">
+                          ⚠ Missing: {v.missing.join(', ')}
+                        </span>
+                      )}
+                      {columbiaSteps.length > 0 && (
+                        <button
+                          onClick={() => resetStepToColumbia(index)}
+                          className="flex items-center gap-1 text-xs text-gray-500 hover:text-blue-600"
+                          title="Restore this step's settings from co-lum-bia"
+                        >
+                          <RotateCcw size={12} />
+                          Reset to co-lum-bia defaults
+                        </button>
+                      )}
+                    </div>
+
                     {/* Prompts */}
                     <div>
                       <label className="block text-xs font-semibold text-gray-500 mb-1">SYSTEM PROMPT</label>
@@ -542,7 +651,7 @@ export default function Dashboard() {
                         value={step.llm_system_prompt}
                         onChange={(e) => handleStepChange(index, 'llm_system_prompt', e.target.value)}
                         onBlur={() => saveStepToDB(steps[index])}
-                        className="w-full p-2 text-sm border rounded bg-transparent font-mono"
+                        className={`w-full p-2 text-sm border rounded bg-transparent font-mono ${!step.llm_system_prompt?.trim() ? 'border-red-400 ring-1 ring-red-400' : ''}`}
                         rows={2}
                       />
                     </div>
@@ -552,7 +661,7 @@ export default function Dashboard() {
                         value={step.llm_user_prompt}
                         onChange={(e) => handleStepChange(index, 'llm_user_prompt', e.target.value)}
                         onBlur={() => saveStepToDB(steps[index])}
-                        className="w-full p-2 text-sm border rounded bg-transparent font-mono"
+                        className={`w-full p-2 text-sm border rounded bg-transparent font-mono ${!step.llm_user_prompt?.trim() ? 'border-red-400 ring-1 ring-red-400' : ''}`}
                         rows={2}
                       />
                     </div>
@@ -566,7 +675,7 @@ export default function Dashboard() {
                           value={step.llm_model_id ?? ''}
                           onChange={e => handleStepChange(index, 'llm_model_id', Number(e.target.value))}
                           onBlur={() => saveStepToDB(steps[index])}
-                          className="w-full p-1.5 text-sm border rounded bg-transparent"
+                          className={`w-full p-1.5 text-sm border rounded bg-transparent ${!step.llm_model_id ? 'border-red-400 ring-1 ring-red-400' : ''}`}
                         >
                           <option value="" disabled>Select model…</option>
                           {llmModels.map(m => (
@@ -597,13 +706,18 @@ export default function Dashboard() {
                           value={step.humor_flavor_step_type_id ?? ''}
                           onChange={e => handleStepChange(index, 'humor_flavor_step_type_id', Number(e.target.value))}
                           onBlur={() => saveStepToDB(steps[index])}
-                          className="w-full p-1.5 text-sm border rounded bg-transparent"
+                          className={`w-full p-1.5 text-sm border rounded bg-transparent ${!step.humor_flavor_step_type_id ? 'border-red-400 ring-1 ring-red-400' : ''}`}
                         >
                           <option value="" disabled>Select type…</option>
                           {stepTypes.map(t => (
                             <option key={t.id} value={t.id}>{t.slug ?? t.name ?? t.id}</option>
                           ))}
                         </select>
+                        {stepTypes.find(t => t.id === step.humor_flavor_step_type_id)?.description && (
+                          <p className="text-xs text-gray-500 mt-1 italic">
+                            {stepTypes.find(t => t.id === step.humor_flavor_step_type_id)?.description}
+                          </p>
+                        )}
                       </div>
 
                       {/* Input Type */}
@@ -613,13 +727,18 @@ export default function Dashboard() {
                           value={step.llm_input_type_id ?? ''}
                           onChange={e => handleStepChange(index, 'llm_input_type_id', Number(e.target.value))}
                           onBlur={() => saveStepToDB(steps[index])}
-                          className="w-full p-1.5 text-sm border rounded bg-transparent"
+                          className={`w-full p-1.5 text-sm border rounded bg-transparent ${!step.llm_input_type_id ? 'border-red-400 ring-1 ring-red-400' : ''}`}
                         >
                           <option value="" disabled>Select input…</option>
                           {inputTypes.map(t => (
                             <option key={t.id} value={t.id}>{t.slug ?? t.name ?? t.id}</option>
                           ))}
                         </select>
+                        {inputTypes.find(t => t.id === step.llm_input_type_id)?.description && (
+                          <p className="text-xs text-gray-500 mt-1 italic">
+                            {inputTypes.find(t => t.id === step.llm_input_type_id)?.description}
+                          </p>
+                        )}
                       </div>
 
                       {/* Output Type */}
@@ -629,13 +748,18 @@ export default function Dashboard() {
                           value={step.llm_output_type_id ?? ''}
                           onChange={e => handleStepChange(index, 'llm_output_type_id', Number(e.target.value))}
                           onBlur={() => saveStepToDB(steps[index])}
-                          className="w-full p-1.5 text-sm border rounded bg-transparent"
+                          className={`w-full p-1.5 text-sm border rounded bg-transparent ${!step.llm_output_type_id ? 'border-red-400 ring-1 ring-red-400' : ''}`}
                         >
                           <option value="" disabled>Select output…</option>
                           {outputTypes.map(t => (
                             <option key={t.id} value={t.id}>{t.slug ?? t.name ?? t.id}</option>
                           ))}
                         </select>
+                        {outputTypes.find(t => t.id === step.llm_output_type_id)?.description && (
+                          <p className="text-xs text-gray-500 mt-1 italic">
+                            {outputTypes.find(t => t.id === step.llm_output_type_id)?.description}
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -649,7 +773,8 @@ export default function Dashboard() {
                   </div>
 
                 </div>
-              ))}
+                )
+              })}
             </div>
 
             {/* Test API Panel */}
