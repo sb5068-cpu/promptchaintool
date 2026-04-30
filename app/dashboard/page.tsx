@@ -2,7 +2,9 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
-import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save, Pencil, X, Copy } from 'lucide-react'
+import { Plus, Trash2, ArrowUp, ArrowDown, Play, Save, Pencil, X, Copy, Search } from 'lucide-react'
+
+const MY_FLAVORS_KEY = 'prompt-chain-tool:my-flavor-ids'
 
 // --- Types ---
 type Flavor    = { id: number; slug: string; description: string }
@@ -47,11 +49,42 @@ export default function Dashboard() {
   const [testCaptions,  setTestCaptions]  = useState<Caption[]>([])
   const [testError,     setTestError]     = useState<string | null>(null)
 
+  // Search & "mine" tracking (per-browser via localStorage)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [myFlavorIds, setMyFlavorIds] = useState<Set<number>>(new Set())
+
   // 1. Fetch everything on load
   useEffect(() => {
     fetchFlavors()
     fetchLookups()
+    try {
+      const stored = localStorage.getItem(MY_FLAVORS_KEY)
+      if (stored) {
+        const ids = JSON.parse(stored)
+        if (Array.isArray(ids)) setMyFlavorIds(new Set(ids))
+      }
+    } catch {}
   }, [])
+
+  function markAsMine(id: number) {
+    setMyFlavorIds(prev => {
+      if (prev.has(id)) return prev
+      const next = new Set(prev)
+      next.add(id)
+      try { localStorage.setItem(MY_FLAVORS_KEY, JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }
+
+  function unmarkAsMine(id: number) {
+    setMyFlavorIds(prev => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      try { localStorage.setItem(MY_FLAVORS_KEY, JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }
 
   async function fetchFlavors() {
     const { data } = await supabase.from('humor_flavors').select('*').order('id', { ascending: false })
@@ -97,6 +130,7 @@ export default function Dashboard() {
     const { data, error } = await supabase.from('humor_flavors').insert([{ slug, description: 'New Flavor' }]).select().single()
     if (!error && data) {
       setFlavors([data, ...flavors])
+      markAsMine(data.id)
     } else {
       alert("Error creating flavor. Make sure the slug is unique!")
     }
@@ -118,6 +152,7 @@ export default function Dashboard() {
       setFlavors(flavors.map(f => f.id === id ? data : f))
       if (selectedFlavor?.id === id) setSelectedFlavor(data)
       setEditingFlavorId(null)
+      markAsMine(id)
     } else {
       alert("Error saving flavor. Make sure the slug is unique!")
     }
@@ -159,6 +194,7 @@ export default function Dashboard() {
     }
 
     setFlavors([newFlavor, ...flavors])
+    markAsMine(newFlavor.id)
   }
 
   // 4. Create a new Step — use first real ID from each lookup table
@@ -182,7 +218,10 @@ export default function Dashboard() {
       console.error("SUPABASE ERROR:", error)
       alert(`Failed to add step! Error: ${error.message}`)
     }
-    if (data) setSteps([...steps, data])
+    if (data) {
+      setSteps([...steps, data])
+      markAsMine(selectedFlavor.id)
+    }
   }
 
   // 5. Update Step field in local state
@@ -204,6 +243,7 @@ export default function Dashboard() {
       llm_temperature:           step.llm_temperature,
     }).eq('id', step.id)
     if (error) alert("Failed to save changes to database!")
+    else if (selectedFlavor) markAsMine(selectedFlavor.id)
   }
 
   // 7. Reorder Steps
@@ -222,6 +262,7 @@ export default function Dashboard() {
       { id: newSteps[index].id,    order_by: newSteps[index].order_by },
       { id: newSteps[swapIndex].id, order_by: newSteps[swapIndex].order_by },
     ])
+    if (selectedFlavor) markAsMine(selectedFlavor.id)
   }
 
   // 8. Delete
@@ -229,12 +270,14 @@ export default function Dashboard() {
     if (!confirm("Are you sure? This deletes all associated steps!")) return
     await supabase.from('humor_flavors').delete().eq('id', id)
     setFlavors(flavors.filter(f => f.id !== id))
+    unmarkAsMine(id)
     if (selectedFlavor?.id === id) setSelectedFlavor(null)
   }
 
   async function deleteStep(id: number) {
     await supabase.from('humor_flavor_steps').delete().eq('id', id)
     setSteps(steps.filter(s => s.id !== id))
+    if (selectedFlavor) markAsMine(selectedFlavor.id)
   }
 
   // 9. Test API
@@ -349,23 +392,61 @@ export default function Dashboard() {
   const labelFor = (rows: LookupRow[], id: number | null) =>
     rows.find(r => r.id === id)?.name ?? rows.find(r => r.id === id)?.slug ?? String(id)
 
+  const filteredFlavors = flavors.filter(f => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return true
+    return f.slug.toLowerCase().includes(q) || (f.description?.toLowerCase().includes(q) ?? false)
+  })
+
   if (loading) return <div>Loading interface...</div>
 
   return (
     <div className="flex gap-8 h-[80vh]">
       {/* LEFT COLUMN: FLAVORS */}
       <div className="w-1/3 bg-card p-6 rounded-xl border shadow-sm overflow-y-auto">
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex justify-between items-center mb-4">
           <h2 className="text-2xl font-bold">Humor Flavors</h2>
           <button onClick={createFlavor} className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700">
             <Plus size={20} />
           </button>
         </div>
 
+        <div className="relative mb-4">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search flavors…"
+            className="w-full pl-8 pr-7 py-1.5 text-sm border rounded bg-transparent"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              title="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 mb-3 text-xs text-gray-500">
+          <span className="inline-block w-3 h-3 rounded-sm bg-amber-500" />
+          <span>= flavors you created or modified</span>
+        </div>
+
         <div className="space-y-3">
-          {flavors.map(flavor => (
-            editingFlavorId === flavor.id ? (
-              <div key={flavor.id} className="p-4 border rounded border-blue-500 bg-blue-50 dark:bg-blue-900/20 space-y-2">
+          {filteredFlavors.length === 0 && (
+            <p className="text-sm text-gray-500 italic">
+              {searchQuery ? `No flavors match "${searchQuery}".` : 'No flavors yet.'}
+            </p>
+          )}
+          {filteredFlavors.map(flavor => {
+            const isMine = myFlavorIds.has(flavor.id)
+            const mineAccent = isMine ? 'border-l-4 border-l-amber-500' : ''
+            return editingFlavorId === flavor.id ? (
+              <div key={flavor.id} className={`p-4 border rounded border-blue-500 bg-blue-50 dark:bg-blue-900/20 space-y-2 ${mineAccent}`}>
                 <input
                   value={editingFlavorData.slug}
                   onChange={e => setEditingFlavorData(d => ({ ...d, slug: e.target.value }))}
@@ -390,7 +471,7 @@ export default function Dashboard() {
             ) : (
               <div
                 key={flavor.id}
-                className={`p-4 border rounded cursor-pointer flex justify-between items-center transition-colors ${selectedFlavor?.id === flavor.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                className={`p-4 border rounded cursor-pointer flex justify-between items-center transition-colors ${selectedFlavor?.id === flavor.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-800'} ${mineAccent}`}
                 onClick={() => handleSelectFlavor(flavor)}
               >
                 <div className="min-w-0">
@@ -410,7 +491,7 @@ export default function Dashboard() {
                 </div>
               </div>
             )
-          ))}
+          })}
         </div>
       </div>
 
